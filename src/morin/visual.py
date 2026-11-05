@@ -3,8 +3,9 @@
 
 import functools
 from dataclasses import dataclass
+from importlib import resources
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from StreamDeck.Devices.StreamDeck import StreamDeck
 from StreamDeck.ImageHelpers import PILHelper
 
@@ -168,6 +169,22 @@ def agent_key_image(deck: StreamDeck, agent: Agent, alt: bool = False) -> bytes:
     return _render_agent_key_image(
         deck, agent.status, alt, _project_label(agent.project), agent.name
     )
+
+
+# Returns the native key image for `deck` showing the image file
+# `file_name` of the `images` directory of this package, scaled and
+# cropped to fill the key.
+@functools.cache
+def picture_key_image(deck: StreamDeck, file_name: str) -> bytes:
+    with (resources.files('morin') / 'images' / file_name).open('rb') as f:
+        image = Image.open(f)
+
+        # Pillow reads lazily: read before closing the file
+        image.load()
+
+    size = deck.key_image_format()['size']
+    image = ImageOps.fit(image.convert('RGB'), size, Image.Resampling.LANCZOS)
+    return PILHelper.to_native_key_format(deck, image)
 
 
 # Returns the native image of a key showing nothing for `deck`.

@@ -5,24 +5,55 @@ import asyncio
 import contextlib
 import signal
 import sys
+from dataclasses import dataclass
 
 from StreamDeck.DeviceManager import DeviceManager
 from StreamDeck.Devices.StreamDeck import StreamDeck
 
-from morin import kitty, visual
+from morin import chromium, kitty, visual
 from morin.herdr import AgentLoc, HerdrClient, HerdrError, HerdrState
 
 
+# Key which opens a URL with Chromium.
+@dataclass(frozen=True, slots=True)
+class _Link:
+    url: str
+
+    # Key image file name within the `images` directory of this package
+    image: str
+
+
+# Links of the bottom row of keys, from right to left.
+_LINKS = [
+    _Link('https://review.lttng.org/q/status:open+attention:self', 'paul.jpg'),
+    _Link('https://support.efficios.com/projects/lttng-tools/issues', 'jgalar.jpg'),
+    _Link('https://www.tourisme-gaspesie.com/fr/', 'frdeso.jpg'),
+]
+
+
 # Shows the agents of a Herdr server on the keys of a Stream Deck, from
-# left to right in the Herdr order.
+# left to right in the Herdr order, and the links of `_LINKS` on the
+# bottom row, from right to left.
 #
-# Pressing a key brings the kitty window running the Herdr client to the
-# front, and then focuses the agent pane of the key.
+# Pressing an agent key brings the kitty window running the Herdr client
+# to the front, and then focuses the agent pane of the key.
+#
+# Pressing a link key opens its URL with Chromium.
 class _App:
     def __init__(self, deck: StreamDeck, client: HerdrClient) -> None:
         self._deck = deck
         self._client = client
         self._key_locs: list[AgentLoc] = []
+        rows, cols = deck.key_layout()
+
+        # Agents get all the keys but the bottom row
+        self._agent_key_count = (rows - 1) * cols
+
+        # Link of each key of the bottom row, from the last key
+        self._key_links = {
+            deck.key_count() - 1 - index: link for index, link in enumerate(_LINKS[:cols])
+        }
+
         self._key_images: list[bytes | None] = [None] * deck.key_count()
         self._state: HerdrState | None = None
 
@@ -50,15 +81,14 @@ class _App:
             self._show()
 
     def _show(self) -> None:
-        if self._state is None:
-            return
-
-        agents = self._state.agents[: self._deck.key_count()]
+        agents = [] if self._state is None else self._state.agents[: self._agent_key_count]
         self._key_locs = [agent.loc for agent in agents]
 
         for key in range(self._deck.key_count()):
             if key < len(agents):
                 image = visual.agent_key_image(self._deck, agents[key], self._blink_alt)
+            elif (link := self._key_links.get(key)) is not None:
+                image = visual.picture_key_image(self._deck, link.image)
             else:
                 image = visual.blank_key_image(self._deck)
 
@@ -68,12 +98,15 @@ class _App:
                 self._key_images[key] = image
 
     async def _on_key(self, _deck: StreamDeck, key: int, pressed: bool) -> None:
-        if not pressed or key >= len(self._key_locs):
+        if not pressed:
             return
 
-        await asyncio.gather(
-            self._focus_herdr_window(), self._focus_herdr_agent_pane(self._key_locs[key])
-        )
+        if key < len(self._key_locs):
+            await asyncio.gather(
+                self._focus_herdr_window(), self._focus_herdr_agent_pane(self._key_locs[key])
+            )
+        elif (link := self._key_links.get(key)) is not None:
+            await self._open_link(link)
 
     async def _focus_herdr_window(self) -> None:
         try:
@@ -86,6 +119,12 @@ class _App:
             await self._client.focus_agent_pane(loc)
         except HerdrError as exc:
             _warn(f"Can't focus agent pane: {exc}")
+
+    async def _open_link(self, link: _Link) -> None:
+        try:
+            await chromium.open_url(link.url)
+        except chromium.ChromiumError as exc:
+            _warn(f"Can't open `{link.url}`: {exc}")
 
 
 def _warn(msg: str) -> None:
