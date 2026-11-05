@@ -1,0 +1,38 @@
+[project]
+name = "morin"
+version = "0.1.0"
+description = "Show the status of Herdr agents on a Stream Deck"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Philippe Proulx", email = "eeppeliteloop@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pillow>=13.0.0",
+    "pydantic>=2.14.3",
+    "streamdeck>=0.10.0",
+]
+
+[project.scripts]
+morin = "morin.morin:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.3",
+]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+quote-style = "single"
