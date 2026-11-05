@@ -2,51 +2,16 @@
 # SPDX-License-Identifier: MIT
 
 import functools
-from dataclasses import dataclass
-from importlib import resources
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from StreamDeck.Devices.StreamDeck import StreamDeck
 from StreamDeck.ImageHelpers import PILHelper
 
-from morin.herdr import Agent, AgentStatus
+from morin.cfg import Cfg, StatusColors
+from morin.herdr import Agent
 
 type _Font = ImageFont.FreeTypeFont | ImageFont.ImageFont
-
-# Short project names which fit a key.
-_PROJECT_ALIASES = {
-    'babeltrace': 'BT',
-    'lttng-tools': 'tools',
-    'lttng-ust': 'UST',
-    'lttng-modules': 'mod',
-    'jacquesctf': 'jctf',
-    'yactfr': 'yac',
-    'barectf': 'bare',
-    'lttng-www': 'l-www',
-    'normand': 'norm',
-    'lttng-ci': 'CI',
-}
-
-
-# Key colors of an agent status.
-@dataclass(frozen=True, slots=True)
-class _StatusColors:
-    bg: str
-
-    # Agent name, readable over `bg`
-    name: str
-
-    # Background of the alternate phase of a blinking key, if any
-    alt_bg: str | None = None
-
-
-_STATUS_COLORS: dict[AgentStatus, _StatusColors] = {
-    AgentStatus.IDLE: _StatusColors(bg='#000000', name='#ffffff'),
-    AgentStatus.DONE: _StatusColors(bg='#4ade80', name='#000000'),
-    AgentStatus.WORKING: _StatusColors(bg='#fde047', name='#000000', alt_bg='#f2c00f'),
-    AgentStatus.BLOCKED: _StatusColors(bg='#ff5a5a', name='#ffffff'),
-    AgentStatus.UNKNOWN: _StatusColors(bg='#475569', name='#ffffff'),
-}
 
 # Font files of the project and agent name, which Pillow finds in the
 # system font directories.
@@ -97,17 +62,12 @@ def _fit_text(
     return f'{text.rstrip()}…', font
 
 
-def _project_label(project_name: str) -> str:
-    return _PROJECT_ALIASES.get(project_name, project_name)
-
-
 # Only takes what affects the rendering, so that agents sharing it share
 # the cached image.
 @functools.lru_cache(maxsize=256)
 def _render_agent_key_image(
-    deck: StreamDeck, status: AgentStatus, alt: bool, project_label: str, name: str
+    deck: StreamDeck, colors: StatusColors, alt: bool, project_label: str, name: str
 ) -> bytes:
-    colors = _STATUS_COLORS[status]
     bg = colors.alt_bg if alt and colors.alt_bg is not None else colors.bg
     image: Image.Image = PILHelper.create_key_image(deck, bg)
     draw = ImageDraw.Draw(image)
@@ -160,31 +120,28 @@ def _render_agent_key_image(
 
 
 # Returns the native key image of `agent` for `deck`, ready
-# for StreamDeck.set_key_image().
+# for StreamDeck.set_key_image(), with the colors and project aliases
+# of `cfg`.
 #
 # `alt` selects the alternate phase of a blinking key.
-def agent_key_image(deck: StreamDeck, agent: Agent, alt: bool = False) -> bytes:
+def agent_key_image(deck: StreamDeck, agent: Agent, cfg: Cfg, alt: bool = False) -> bytes:
+    colors = cfg.agent_status_colors[agent.status]
+
     # Only keep `alt` when it makes a difference, to share cached images
-    alt = alt and _STATUS_COLORS[agent.status].alt_bg is not None
-    return _render_agent_key_image(
-        deck, agent.status, alt, _project_label(agent.project), agent.name
-    )
+    alt = alt and colors.alt_bg is not None
+    return _render_agent_key_image(deck, colors, alt, cfg.project_label(agent.project), agent.name)
 
 
 # Returns the native key image for `deck` showing the image file
-# `file_name` of the `images` directory of this package, scaled and
-# cropped to fill the key.
+# `path`, scaled and cropped to fill the key.
 @functools.cache
-def picture_key_image(deck: StreamDeck, file_name: str) -> bytes:
-    with (resources.files('morin') / 'images' / file_name).open('rb') as f:
-        image = Image.open(f)
+def picture_key_image(deck: StreamDeck, path: Path) -> bytes:
+    with Image.open(path) as file_image:
+        image = file_image.convert('RGB')
 
-        # Pillow reads lazily: read before closing the file
-        image.load()
-
-    size = deck.key_image_format()['size']
-    image = ImageOps.fit(image.convert('RGB'), size, Image.Resampling.LANCZOS)
-    return PILHelper.to_native_key_format(deck, image)
+    return PILHelper.to_native_key_format(
+        deck, ImageOps.fit(image, deck.key_image_format()['size'], Image.Resampling.LANCZOS)
+    )
 
 
 # Returns the native image of a key showing nothing for `deck`.

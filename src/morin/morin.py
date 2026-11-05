@@ -5,34 +5,17 @@ import asyncio
 import contextlib
 import signal
 import sys
-from dataclasses import dataclass
 
 from StreamDeck.DeviceManager import DeviceManager
 from StreamDeck.Devices.StreamDeck import StreamDeck
 
 from morin import chromium, kitty, visual
+from morin.cfg import Cfg, CfgError, Link, load_cfg
 from morin.herdr import AgentLoc, HerdrClient, HerdrError, HerdrState
 
 
-# Key which opens a URL with Chromium.
-@dataclass(frozen=True, slots=True)
-class _Link:
-    url: str
-
-    # Key image file name within the `images` directory of this package
-    image: str
-
-
-# Links of the bottom row of keys, from right to left.
-_LINKS = [
-    _Link('https://review.lttng.org/q/status:open+attention:self', 'paul.jpg'),
-    _Link('https://support.efficios.com/projects/lttng-tools/issues', 'jgalar.jpg'),
-    _Link('https://www.tourisme-gaspesie.com/fr/', 'frdeso.jpg'),
-]
-
-
 # Shows the agents of a Herdr server on the keys of a Stream Deck, from
-# left to right in the Herdr order, and the links of `_LINKS` on the
+# left to right in the Herdr order, and the configured links on the
 # bottom row, from right to left.
 #
 # Pressing an agent key brings the kitty window running the Herdr client
@@ -40,19 +23,22 @@ _LINKS = [
 #
 # Pressing a link key opens its URL with Chromium.
 class _App:
-    def __init__(self, deck: StreamDeck, client: HerdrClient) -> None:
+    def __init__(self, deck: StreamDeck, client: HerdrClient, cfg: Cfg) -> None:
         self._deck = deck
         self._client = client
+        self._cfg = cfg
         self._key_locs: list[AgentLoc] = []
         rows, cols = deck.key_layout()
 
-        # Agents get all the keys but the bottom row
-        self._agent_key_count = (rows - 1) * cols
-
         # Link of each key of the bottom row, from the last key
         self._key_links = {
-            deck.key_count() - 1 - index: link for index, link in enumerate(_LINKS[:cols])
+            deck.key_count() - 1 - index: link for index, link in enumerate(cfg.links[:cols])
         }
+
+        # Agents get the first keys: all the keys but the bottom row by
+        # default, but never a link key
+        max_agent_keys = cfg.max_agent_keys or (rows - 1) * cols
+        self._agent_key_count = min(max_agent_keys, deck.key_count() - len(self._key_links))
 
         self._key_images: list[bytes | None] = [None] * deck.key_count()
         self._state: HerdrState | None = None
@@ -86,7 +72,7 @@ class _App:
 
         for key in range(self._deck.key_count()):
             if key < len(agents):
-                image = visual.agent_key_image(self._deck, agents[key], self._blink_alt)
+                image = visual.agent_key_image(self._deck, agents[key], self._cfg, self._blink_alt)
             elif (link := self._key_links.get(key)) is not None:
                 image = visual.picture_key_image(self._deck, link.image)
             else:
@@ -120,7 +106,7 @@ class _App:
         except HerdrError as exc:
             _warn(f"Can't focus agent pane: {exc}")
 
-    async def _open_link(self, link: _Link) -> None:
+    async def _open_link(self, link: Link) -> None:
         try:
             await chromium.open_url(link.url)
         except chromium.ChromiumError as exc:
@@ -133,14 +119,19 @@ def _warn(msg: str) -> None:
 
 # Runs the app until it's cancelled, for example by `SIGTERM` when
 # systemd stops the service.
-async def _run(deck: StreamDeck) -> None:
+async def _run(deck: StreamDeck, cfg: Cfg) -> None:
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
 
     with contextlib.suppress(asyncio.CancelledError):
-        await _App(deck, HerdrClient()).run()
+        await _App(deck, HerdrClient(), cfg).run()
 
 
 def main() -> None:
+    try:
+        cfg = load_cfg()
+    except CfgError as exc:
+        raise SystemExit(str(exc)) from None
+
     decks = DeviceManager().enumerate()
 
     if not decks:
@@ -154,7 +145,7 @@ def main() -> None:
         deck.set_brightness(100)
 
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(_run(deck))
+            asyncio.run(_run(deck, cfg))
     finally:
         deck.reset()
         deck.close()

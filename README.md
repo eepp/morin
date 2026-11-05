@@ -18,9 +18,9 @@ status of the agent:
 Press a key to bring the kitty window running Herdr to the front and
 focus the pane of that agent.
 
-Agents only use the top two rows: the bottom row holds links, from right
-to left, which open in a new tab of your current Chromium window when
-you press them.
+By default, agents only use the top rows: the bottom row holds links,
+from right to left, which open in a new tab of your current Chromium
+window when you press them.
 
 ## Setup
 
@@ -36,8 +36,51 @@ This project assumes my super specific setup:
   [Roboto Condensed](https://fonts.google.com/specimen/Roboto+Condensed)
   font (optional but it looks better)
 
-It also uses custom labels for my specific project names (for example
-"Babeltrace" becomes "BT").
+## Configuration
+
+morin reads the optional `~/.config/morin/config.toml` file (or
+`$XDG_CONFIG_HOME/morin/config.toml`):
+
+```toml
+# Maximum number of agent keys (default: all the keys but the
+# bottom row).
+#
+# Agent keys never cover link keys, therefore a higher value lets agents
+# use the free keys of the bottom row.
+max-agent-keys = 10
+
+# Links of the bottom row of keys, from right to left.
+#
+# `image` is a file name within `~/.config/morin/images`.
+[[links]]
+url = 'https://review.lttng.org/q/status:open+attention:self'
+image = 'paul.jpg'
+
+[[links]]
+url = 'https://support.efficios.com/projects/lttng-tools/issues'
+image = 'jgalar.jpg'
+
+# Short project names which fit a key.
+[project-aliases]
+babeltrace = 'BT'
+lttng-tools = 'tools'
+yactfr = 'yac'
+
+# Key colors of each agent status (`idle`, `working`, `done`, `blocked`,
+# or `unknown`): background (`bg`), agent name (`name`) and, to make the
+# key blink, alternate background (`alt-bg`).
+#
+# A missing status keeps its default colors.
+[agent-status-colors]
+working = { bg = '#fde047', name = '#000000', alt-bg = '#d9a90a' }
+done = { bg = '#4ade80', name = '#000000' }
+```
+
+A color is anything [Pillow](https://python-pillow.org/) understands,
+for example `#fde047` or `black`.
+
+Without a configuration file, there are no links and no project
+aliases, with the default colors of the table above.
 
 ## Run
 
