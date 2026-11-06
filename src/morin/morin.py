@@ -3,8 +3,10 @@
 
 import asyncio
 import contextlib
+import random
 import signal
 import sys
+from collections.abc import Callable
 
 from StreamDeck.DeviceManager import DeviceManager
 from StreamDeck.Devices.StreamDeck import StreamDeck
@@ -22,6 +24,31 @@ from morin.herdr import AgentLoc, HerdrClient, HerdrError, HerdrState
 # to the front, and then focuses the agent pane of the key.
 #
 # Pressing a link key opens its URL with Chromium.
+# Flips the blinking phase of an agent key with a random period from
+# 250 ms to 400 ms, calling `on_flip` after each flip, until cancelled.
+#
+# Different periods make the blinking keys look less mechanical.
+class _Blinker:
+    def __init__(self, on_flip: Callable[[], None]) -> None:
+        self._period = random.uniform(0.25, 0.4)
+        self._alt = False
+        self._task = asyncio.create_task(self._run(on_flip))
+
+    # Whether the key is in its alternate phase.
+    @property
+    def alt(self) -> bool:
+        return self._alt
+
+    def cancel(self) -> None:
+        self._task.cancel()
+
+    async def _run(self, on_flip: Callable[[], None]) -> None:
+        while True:
+            await asyncio.sleep(self._period)
+            self._alt = not self._alt
+            on_flip()
+
+
 class _App:
     def __init__(self, deck: StreamDeck, client: HerdrClient, cfg: Cfg) -> None:
         self._deck = deck
@@ -43,28 +70,35 @@ class _App:
         self._key_images: list[bytes | None] = [None] * deck.key_count()
         self._state: HerdrState | None = None
 
-        # Current phase of the blinking keys
-        self._blink_alt = False
+        # Blinker of each existing agent, by pane ID
+        self._blinkers: dict[str, _Blinker] = {}
 
     async def run(self) -> None:
         self._deck.set_key_callback_async(self._on_key, asyncio.get_running_loop())
-        blink_task = asyncio.create_task(self._blink())
 
         try:
             async with self._client.monitor() as monitor:
                 async for state in monitor:
                     self._state = state
+                    self._sync_blinkers()
                     self._show()
         finally:
-            blink_task.cancel()
+            for blinker in self._blinkers.values():
+                blinker.cancel()
+
             self._deck.set_key_callback(None)
 
-    # Flips the phase of the blinking keys every 300 ms.
-    async def _blink(self) -> None:
-        while True:
-            await asyncio.sleep(0.3)
-            self._blink_alt = not self._blink_alt
-            self._show()
+    # Gives a blinker to each new agent and drops the blinkers of the
+    # agents which don't exist anymore.
+    def _sync_blinkers(self) -> None:
+        assert self._state is not None
+        pane_ids = {agent.loc.pane_id for agent in self._state.agents}
+
+        for pane_id in self._blinkers.keys() - pane_ids:
+            self._blinkers.pop(pane_id).cancel()
+
+        for pane_id in pane_ids - self._blinkers.keys():
+            self._blinkers[pane_id] = _Blinker(self._show)
 
     def _show(self) -> None:
         agents = [] if self._state is None else self._state.agents[: self._agent_key_count]
@@ -72,7 +106,10 @@ class _App:
 
         for key in range(self._deck.key_count()):
             if key < len(agents):
-                image = visual.agent_key_image(self._deck, agents[key], self._cfg, self._blink_alt)
+                agent = agents[key]
+                image = visual.agent_key_image(
+                    self._deck, agent, self._cfg, self._blinkers[agent.loc.pane_id].alt
+                )
             elif (link := self._key_links.get(key)) is not None:
                 image = visual.picture_key_image(self._deck, link.image)
             else:
